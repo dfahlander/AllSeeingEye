@@ -14,12 +14,13 @@
                          </div>"
         ,   isActive = {}
         ,   deleteDone = true
-        //,   dbVersion = 2
+        //,   dbVersion = 2  // With Dexie, better to specify where its schema is defined (so that newer versions can be easily added)
         ,   settingsVersion = 1
 
     var db = new Dexie("AllMyHistory");
 
-    db.version(2).stores({
+    // IDB version 2 corresponds to Dexie versino 0.2 (divide by 10)
+    db.version(0.2).stores({
         links: "++id,date,*tags",
         settings: "v,*tags"
     });
@@ -90,7 +91,7 @@
                         v: settingsVersion,
                         tags: NLP.unique(msg.tags)
                     }
-                );
+                )
 
                 // close the handler
                 respond()
@@ -101,19 +102,13 @@
 
             if (msg.action == "allow") {
 
-                var transaction = db.transaction("settings", "readonly");
-                var objectStore = transaction.objectStore("settings");
-                var request = objectStore.get(settingsVersion)
+                var test = false;
 
-                var test = false
-
-                request.onsuccess = function(e) {
-
-                    var result = e.target.result
+                db.settings.get(settingsVersion, function (result) {
 
                     var hostname = msg.hostname
 
-                    tags = result.tags
+                    var tags = result.tags
 
                     for (var n = 0, len = tags.length; n < len; n++) {
                      if (hostname.match(new RegExp("([^a-zA-Z0-9\\-]|^)" + esc(tags[n]) + "(?![a-zA-Z0-9\\-])"))) {
@@ -127,7 +122,7 @@
                     } else {
                        respond(true)
                     }
-                }
+                });
             }
 
             if (msg.action === "store") {
@@ -168,9 +163,7 @@
                                         return
                                     }
 
-                                    var transaction = db.transaction(["links"], "readwrite");
-                                    var objectStore = transaction.objectStore("links");
-                                    var request = objectStore.add(
+                                    db.links.add(
                                         {
                                             date: new Date().toLocaleString(),
                                             title: title,
@@ -179,10 +172,9 @@
                                             url: url,
                                             img: src
                                         }
-                                    )
+                                    ).then(function () {
 
-                                    // see if we need to free up disk space
-                                    request.onsuccess = function () {
+                                        // see if we need to free up disk space
                                         console.log(url);
                                         console.log(text);
                                         console.log(tags.sort());
@@ -195,48 +187,28 @@
 
                                             deleteDone = false
 
-                                            var transaction = db.transaction(["links"], "readonly");
-                                            var objectStore = transaction.objectStore("links");
-
-                                            var count = objectStore.count();
-
-                                            count.onsuccess = function(e) {
-                                                var numItems = e.target.result
+                                            db.links.count(function (numItems) {
 
                                                 // if ~> 5Gb, assuming a generous 500K per page
                                                 if (numItems > total) {
-                                                    var transaction = db.transaction(["links"], "readwrite");
-                                                    var objectStore = transaction.objectStore("links");
-                                                    var request = objectStore.openCursor()
 
-                                                    var n = numItems / 10 >> 0
+                                                    console.log('freeing up space... very lazily')
 
-                                                    request.onsuccess = function (e) {
-                                                        var cursor = e.target.result;
+                                                    db.links.orderBy("id").limit(numItems / 10 >> 0).delete().finally(function () {
 
-                                                        if (cursor) {
-                                                            console.log('freeing up space... very lazily')
-                                                            objectStore.delete(cursor.primaryKey);
-                                                            if (n) {
-                                                                n--
-                                                                cursor.continue()
-                                                            } else {
-                                                                deleteDone = true
-                                                            }
+                                                        deleteDone = true;
 
-                                                        } else {
-                                                            deleteDone = true
-                                                        }
-                                                    }
+                                                    });
                                                 } else {
-                                                    deleteDone = true
+                                                    deleteDone = true;
                                                 }
-                                            }
+
+                                            });
 
                                         }
 
                                         freeSpace()
-                                    }
+                                    })
                                 }
                             )
 
@@ -291,65 +263,55 @@
     }
 
     function showAll(tabId, cb) {
-        var transaction = db.transaction("links", "readonly");
-        var objectStore = transaction.objectStore("links");
-        var request = objectStore.openCursor(null,"prev");
 
-        request.onsuccess = function (e) {
-
-            var found = false
-            var cursor = e.target.result;
-
-            if (cursor) {
-                chrome.tabs.sendMessage(tabId,
-                    {
-                        from: "bg",
-                        action: "append",
-                        data: {
-                            title: cursor.value.title,
-                            date:  cursor.value.date,
-                            img: cursor.value.img,
-                            url: cursor.value.url
-                        }
-                    }
-                )
-
-                cb(true)
-
-                if (isActive[tabId]) {
-                    cursor.continue()
-                    return
-                }
-            } else {
-                if (!found) cb()
-            }
+        function tabInactivated() {
+            return !isActive[tabId];
         }
+
+        var found = false;
+
+        db.links.orderBy('id').reverse().until(tabInactivated).each(function (link) {
+
+            chrome.tabs.sendMessage(tabId,
+                {
+                    from: "bg",
+                    action: "append",
+                    data: {
+                        title: link.title,
+                        date: link.date,
+                        img: link.img,
+                        url: link.url
+                    }
+                }
+            )
+
+            found = true; // There was a bug here that called cb() on each iteration. Now cb is called in then() to be called only once. /David.
+
+        }).then(function () { cb(found) }); 
     }
 
 
     function search(tags, text, multi, tabId, cb) {
 
-        var transaction = db.transaction("links", "readonly");
-        var objectStore = transaction.objectStore("links");
-        var index = objectStore.index("tags");
+        function tabInactivated() {
+            return !isActive[tabId];
+        }
 
-        var range = IDBKeyRange.only(tags[tags.length - 1], "prev")
-        var cursor = index.openCursor(range)
+        var anythingFound = false;
 
-        cursor.onsuccess = function(e) {
+        return db.links
+            .where("tags").anyOf(tags) // Previous version only search for the last tag. I assume you want to search for any of given tags?
+            .reverse()
+            .until(tabInactivated)
+            .each(function (link) {
 
-            var     cursor = e.target.result
-                ,   found = false
-                ,   isExactMatch = false
-
-            if (cursor) {
-
-                found = true;
+                var found = false,
+                    isExactMatch = false;
 
                 var len = tags.length > 1 ? tags.length - 1 : 0;
-                var _tags = cursor.value.tags
+                var _tags = link.tags
 
-                while(len--) {
+                while (len--) {
                     if (_tags.indexOf(tags[len]) === -1) {
                         found = false;
                         break;
@@ -357,53 +319,50 @@
                 }
 
                 if (found) {
-                    var exactTest = cursor.value.text.indexOf(text)
+                    var exactTest = link.text.indexOf(text)
                     if (multi && exactTest !== -1) {
                         isExactMatch = true
                     }
                 }
 
                 if (found) {
-                    cb({result: "found"})
-
                     chrome.tabs.sendMessage(tabId,
                         {
                             from: "bg",
-                            action: isExactMatch ? "prepend": "append",
+                            action: isExactMatch ? "prepend" : "append",
                             data: {
-                                title: cursor.value.title,
-                                date: cursor.value.date,
+                                title: link.title,
+                                date: link.date,
                                 exactMatch: isExactMatch ? exactMatchHTML : undefined,
-                                img: cursor.value.img,
-                                url: cursor.value.url
+                                img: link.img,
+                                url: link.url
                             }
                         }
                     )
+
+                    anythingFound = true;
                 }
 
-                if (isActive[tabId]) {
-                    cursor.continue();
-                    return;
-                }
+            }).then(function () {
 
-            } else {
-                if (!found) {
-                    var transaction = db.transaction("links", "readonly");
-                    var objectStore = transaction.objectStore("links");
-                    var cursor = objectStore.openCursor();
+                if (anythingFound)
+                    return "found";
+                else
+                    return db.links.count(function (numLinks) {
+                        return numLinks ? "not found" : "no items";
+                    })
 
-                    cursor.onsuccess = function(e) {
-                        var cursor = e.target.result
+            }).then(function (result) {
 
-                        if (!cursor) {
-                            cb({result: "no items"})
-                        } else {
-                            cb({result: "not found"})
-                        }
-                    }
-                }
-            }
-        }
+                cb({ result: result });
+
+            }).catch(function (err) {
+
+                console.log(err.stack || err); // Will log the stack if existing
+
+                cb({ result: "error" }); // TODO: Recieve error in history.js
+
+            });
     }
 
 
