@@ -24,6 +24,9 @@
         links: "++id,date,*tags",
         settings: "v,*tags"
     });
+    db.version(3).stores({
+        links: "++id,date,*tags,*words", // Adding the index "*words" into links table
+    });
 
     db.on('populate', function () {
         db.settings.put(
@@ -169,6 +172,7 @@
                                             title: title,
                                             tags: tags,
                                             text: text,
+                                            words: getAllWords(text),
                                             url: url,
                                             img: src
                                         }
@@ -299,8 +303,16 @@
 
         var anythingFound = false;
 
+        var words = getAllWords(text);
+
+        var tagsSet = tags.reduce(function (prev, curr) { prev[curr] = true; }, {});
+
         return db.links
-            .where("tags").anyOf(tags) // Previous version only search for the last tag. I assume you want to search for any of given tags?
+            .where("words").anyOf(words) // Testing to index on words instead of tags
+            .distinct()
+            // ..."manually" exclude all links that hasnt any of requested tags:
+            .and(function (link) { return link.tags.some(function(tag) { return tagSet[tag] })}
+
             .reverse()
             .until(tabInactivated)
             .each(function (link) {
@@ -363,6 +375,16 @@
                 cb({ result: "error" }); // TODO: Recieve error in history.js
 
             });
+    }
+
+    function getAllWords(text) {
+        // TODO: Exclude stop-words
+        var allWordsIncludingDups = text.split(' ');
+        var wordSet = allWordsIncludingDups.reduce(function (prev, current) {
+            prev[current] = true;
+            return prev;
+        }, {});
+        return Object.keys(wordSet);
     }
 
 
