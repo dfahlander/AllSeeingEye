@@ -10,7 +10,7 @@
     "128": "icons/AllSeeingEye128.png"
   },
   "background": {
-    "scripts": ["vendor/jquery-2.1.0.min.js", "src/lib/nlp.js", "src/bg/background.js"],
+    "scripts": ["vendor/jquery-2.1.0.min.js", "src/lib/nlp.js", "src/bg/background.js", "vendor/Dexie.min.js"],
     "persistent": true
   },
   "chrome_url_overrides": {

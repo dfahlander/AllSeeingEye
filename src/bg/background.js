@@ -1,4 +1,6 @@
-!function(window, $, undefined) {
+///<reference path="../../../sfdb.js/src/Dexie.js" />
+
+!function (window, $, undefined) {
 
     var     exactMatchHTML = "<div class='exact-match-tag rotate-left'>\
                             <div class='exact-match-bottom'>\
@@ -12,60 +14,42 @@
                          </div>"
         ,   isActive = {}
         ,   deleteDone = true
-        ,   dbVersion = 2
+        //,   dbVersion = 2
         ,   settingsVersion = 1
 
-    var     openRequest = indexedDB.open("AllMyHistory", dbVersion)
-        ,   db
+    var db = new Dexie("AllMyHistory");
 
-    openRequest.onupgradeneeded = function (e) {
+    db.version(2).stores({
+        links: "++id,date,*tags",
+        settings: "v,*tags"
+    });
 
-        var thisDb = e.target.result;
+    db.on('populate', function () {
+        db.settings.put(
+            {
+                v: settingsVersion,
+                // todo:
+                // copy tags from previous version of the settings object (no such for now)
+                tags: []
+            }
+        );
+    });
 
-        //Create object stores
-        if (!thisDb.objectStoreNames.contains("links")) {
-            var objectStore = thisDb.createObjectStore("links", { keyPath: "id", autoIncrement: true });
-            objectStore.createIndex("date", "date", {unique: false});
-            objectStore.createIndex("tags", "tags", {unique: false, multiEntry: true});
-        }
-
-        if (!thisDb.objectStoreNames.contains("settings")) {
-
-            var objectStore = thisDb.createObjectStore("settings", { keyPath: "v", autoIncrement: false });
-            objectStore.createIndex("tags", "tags", {unique: false, multiEntry: true});
-
-            objectStore.transaction.oncomplete = function(e) {
-                var transaction = thisDb.transaction("settings", "readwrite");
-                var objectStore = transaction.objectStore("settings");
-                var request = objectStore.put(
-                    {
-                        v: settingsVersion,
-                        // todo:
-                        // copy tags from previous version of the settings object (no such for now)
-                        tags: []
-                    }
-                )
+    db.on('error',function (err) {
+        var isCase = {
+            "ConstraintError": function () {
+                console.log("ConstraintError")
             }
         }
-    }
-
-    openRequest.onsuccess = function (e) {
-
-        db = e.target.result;
-
-        db.onerror = function (e) {
-            var isCase = {
-                "ConstraintError": function() {
-                    console.log("ConstraintError")
-                }
-            }
-            if (isCase[e.target.error.name]) {
-                isCase[e.target.error.name]()
-            } else {
-                console.log(e.target.error.message)
-            }
+        if (isCase[err.name]) {
+            isCase[err.name]()
+        } else {
+            console.log(err.message)
         }
-    }
+    });
+
+    db.open();
+
 
     chrome.runtime.onMessage.addListener(function (msg, sender, respond) {
 
@@ -95,26 +79,18 @@
 
             if (msg.action === "getHostTags") {
 
-                var transaction = db.transaction("settings", "readwrite");
-                var objectStore = transaction.objectStore("settings");
-                var request = objectStore.get(settingsVersion)
+                db.settings.get(settingsVersion, respond);
 
-                request.onsuccess = function(e) {
-                    var result = e.target.result
-                    respond(result)
-                }
             }
 
             if (msg.action === "saveHostTags") {
 
-                var transaction = db.transaction("settings", "readwrite");
-                var objectStore = transaction.objectStore("settings");
-                var request = objectStore.put(
+                db.settings.put(
                     {
                         v: settingsVersion,
                         tags: NLP.unique(msg.tags)
                     }
-                )
+                );
 
                 // close the handler
                 respond()
